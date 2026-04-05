@@ -36,5 +36,5 @@
 
 1. Клонируйте репозиторий:
    ```bash
-   git clone https://github.com/твой_ник/plant-state-classification-drone-multispectral.git
+   git clone https://github.com/krimberg/plant-state-classification-drone-multispectral.git
    cd plant-state-classification-drone-multispectral
