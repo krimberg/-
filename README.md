@@ -34,7 +34,4 @@
 
 ### Инструкция по запуску
 
-1. Клонируйте репозиторий:
-   ```bash
-   git clone https://github.com/krimberg/plant-state-classification-drone-multispectral.git
-   cd plant-state-classification-drone-multispectral
+
