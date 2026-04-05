@@ -1,0 +1,226 @@
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import DataLoader, random_split
+from torchvision import transforms, datasets, models
+
+# ✅ Правильный импорт для Mixed Precision
+from torch.cuda.amp import GradScaler, autocast
+
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.metrics import accuracy_score, f1_score, confusion_matrix
+from tqdm import tqdm
+import os
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"✅ Устройство: {device}")
+print(f"✅ PyTorch версия: {torch.__version__}")
+## 1. Скачивание и подготовка датасета PlantVillage
+# Создаём папку для данных
+!mkdir -p data/plantvillage
+
+# Способ 1: Через Kaggle (рекомендуется)
+# Загрузи свой kaggle.json вручную (Files → Upload) и раскомментируй ниже:
+import kagglehub
+
+# Download latest version
+path = kagglehub.dataset_download("abdallahalidev/plantvillage-dataset")
+
+print("Path to dataset files:", path)
+
+# !mkdir -p ~/.kaggle
+# !cp kaggle.json ~/.kaggle/
+# !chmod 600 ~/.kaggle/kaggle.json
+# !kaggle datasets download -d abdallahalidev/plantvillage-dataset -p data/
+# !unzip -q data/plantvillage-dataset.zip -d data/plantvillage
+
+# Способ 2: Альтернативный быстрый датасет (если Kaggle не работает)
+#print("Скачиваем альтернативную версию PlantVillage (emmarex/plantdisease)...")
+#!wget -q --show-progress https://www.kaggle.com/datasets/emmarex/plantdisease/download?datasetVersionNumber=1 -O data/plantdisease.zip || echo "Пожалуйста, скачайте датасет вручную с Kaggle"
+
+# Если zip скачался, распакуй (раскомментируй при необходимости)
+# !unzip -q data/plantdisease.zip -d data/plantvillage
+
+data_dir = 'data/plantvillage'
+print("✅ Папка данных создана. Если датасет не скачался автоматически — скачай вручную с Kaggle и распакуй в data/plantvillage")
+# Путь к датасету (как у тебя в Kaggle)
+data_dir = '/kaggle/input/plantvillage-dataset'
+
+# Трансформации (сбалансированные)
+train_transform = transforms.Compose([
+    transforms.Resize((224, 224)),
+    transforms.RandomHorizontalFlip(p=0.5),
+    transforms.RandomRotation(15),
+    transforms.ColorJitter(brightness=0.2, contrast=0.2),
+    transforms.ToTensor(),
+    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+])
+
+val_transform = transforms.Compose([
+    transforms.Resize((224, 224)),
+    transforms.ToTensor(),
+    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+])
+
+# Загрузка датасета
+full_dataset = datasets.ImageFolder(root=data_dir, transform=train_transform)
+
+# Разделение 80/20
+train_size = int(0.8 * len(full_dataset))
+val_size = len(full_dataset) - train_size
+train_dataset, val_dataset = random_split(full_dataset, [train_size, val_size])
+
+val_dataset.dataset.transform = val_transform
+
+print(f"Всего изображений: {len(full_dataset)}")
+print(f"Train: {len(train_dataset)} | Val: {len(val_dataset)}")
+print(f"Классов: {len(full_dataset.classes)}")
+# Оптимизированные DataLoader (решает проблему медленной работы)
+train_loader = DataLoader(
+    train_dataset,
+    batch_size=64,          # увеличен размер батча
+    shuffle=True,
+    num_workers=0,          # в Colab часто быстрее с 0
+    pin_memory=False,       # отключено из-за предупреждения
+    drop_last=True
+)
+
+val_loader = DataLoader(
+    val_dataset,
+    batch_size=64,
+    shuffle=False,
+    num_workers=0,
+    pin_memory=False
+)
+
+print("✅ DataLoader готов (оптимизированный)")
+model = models.resnet50(pretrained=True)
+num_classes = len(full_dataset.classes)
+model.fc = nn.Linear(model.fc.in_features, num_classes)
+model = model.to(device)
+
+criterion = nn.CrossEntropyLoss()
+optimizer = optim.Adam(model.parameters(), lr=0.001)   # чуть выше lr
+scaler = GradScaler()                                   # для ускорения
+
+print("✅ Модель ResNet50 загружена")
+os.makedirs('results', exist_ok=True)
+
+num_epochs = 8          # начнём с 8 эпох (можно увеличить позже)
+best_f1 = 0.0
+history = {'train_loss': [], 'val_loss': [], 'val_acc': [], 'val_f1': []}
+
+for epoch in range(num_epochs):
+    # ==================== TRAINING ====================
+    model.train()
+    train_loss = 0.0
+    
+    for images, labels in tqdm(train_loader, desc=f"Epoch {epoch+1}/{num_epochs} [Train]"):
+        images, labels = images.to(device), labels.to(device)
+        
+        optimizer.zero_grad()
+        
+        with autocast():                    # Mixed Precision
+            outputs = model(images)
+            loss = criterion(outputs, labels)
+        
+        scaler.scale(loss).backward()
+        scaler.step(optimizer)
+        scaler.update()
+        
+        train_loss += loss.item()
+    
+    # ==================== VALIDATION ====================
+    model.eval()
+    all_preds, all_labels = [], []
+    val_loss = 0.0
+    
+    with torch.no_grad():
+        for images, labels in tqdm(val_loader, desc=f"Epoch {epoch+1}/{num_epochs} [Val]"):
+            images, labels = images.to(device), labels.to(device)
+            
+            with autocast():
+                outputs = model(images)
+                loss = criterion(outputs, labels)
+            
+            val_loss += loss.item()
+            _, preds = torch.max(outputs, 1)
+            all_preds.extend(preds.cpu().numpy())
+            all_labels.extend(labels.cpu().numpy())
+    
+    # Метрики
+    acc = accuracy_score(all_labels, all_preds)
+    f1 = f1_score(all_labels, all_preds, average='weighted')
+    
+    history['train_loss'].append(train_loss / len(train_loader))
+    history['val_loss'].append(val_loss / len(val_loader))
+    history['val_acc'].append(acc)
+    history['val_f1'].append(f1)
+    
+    print(f"\nEpoch {epoch+1}/{num_epochs} | "
+          f"Train Loss: {train_loss/len(train_loader):.4f} | "
+          f"Val Loss: {val_loss/len(val_loader):.4f} | "
+          f"Acc: {acc:.4f} | F1: {f1:.4f}")
+    
+    if f1 > best_f1:
+        best_f1 = f1
+        torch.save(model.state_dict(), 'results/best_plant_resnet50.pth')
+        print("✅ Сохранена лучшая модель!")
+plt.figure(figsize=(14, 5))
+
+plt.subplot(1, 2, 1)
+plt.plot(history['train_loss'], label='Train Loss')
+plt.plot(history['val_loss'], label='Val Loss')
+plt.title('Loss')
+plt.xlabel('Epoch')
+plt.legend()
+
+plt.subplot(1, 2, 2)
+plt.plot(history['val_acc'], label='Accuracy')
+plt.plot(history['val_f1'], label='F1-score')
+plt.title('Validation Metrics')
+plt.xlabel('Epoch')
+plt.legend()
+
+plt.tight_layout()
+plt.savefig('results/training_history.png', dpi=300, bbox_inches='tight')
+plt.show()
+# Загрузка лучшей модели
+model.load_state_dict(torch.load('results/best_plant_resnet50.pth', map_location=device))
+model.eval()
+
+all_preds, all_labels = [], []
+with torch.no_grad():
+    for images, labels in tqdm(val_loader, desc="Финальная оценка"):
+        images = images.to(device)
+        outputs = model(images)
+        _, preds = torch.max(outputs, 1)
+        all_preds.extend(preds.cpu().numpy())
+        all_labels.extend(labels.numpy())
+
+acc = accuracy_score(all_labels, all_preds)
+f1 = f1_score(all_labels, all_preds, average='weighted')
+
+print("\n" + "="*60)
+print("ФИНАЛЬНЫЙ ОТЧЁТ")
+print("="*60)
+print(f"Accuracy:           {acc:.4f}")
+print(f"F1-score (weighted): {f1:.4f}")
+print("="*60)
+
+# Confusion Matrix
+cm = confusion_matrix(all_labels, all_preds)
+plt.figure(figsize=(16, 14))
+sns.heatmap(cm, annot=False, cmap='Blues',
+            xticklabels=full_dataset.classes,
+            yticklabels=full_dataset.classes)
+plt.title('Confusion Matrix - PlantVillage Dataset')
+plt.xlabel('Predicted Label')
+plt.ylabel('True Label')
+plt.xticks(rotation=90)
+plt.yticks(rotation=0)
+plt.tight_layout()
+plt.savefig('results/confusion_matrix.png', dpi=300, bbox_inches='tight')
+plt.show()
