@@ -35,3 +35,4 @@
 ### Инструкция по запуску
 
 
+https://colab.research.google.com/drive/1j5lcRSzQ01Yg7LX9rhcZHjSOiRUUfBST?usp=sharing
