@@ -1,0 +1,24 @@
+# Основные библиотеки для глубокого обучения
+torch
+torchvision
+torchaudio
+
+# Для работы с данными и моделями
+scikit-learn
+pandas
+numpy
+
+# Визуализация и отчёты
+matplotlib
+seaborn
+
+# Удобства
+tqdm
+Pillow
+
+# Для мультиспектральных данных с дронов (tif файлы)
+rasterio
+
+# Дополнительно (рекомендуется)
+albumentations          # продвинутые аугментации
+torchmetrics            # удобные метрики
